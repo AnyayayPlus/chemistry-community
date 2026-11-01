@@ -1,0 +1,16 @@
+services:
+  community:
+    build: .
+    restart: unless-stopped
+    environment:
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+      DATABASE_PATH: /data/community.sqlite
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+    volumes:
+      - community-data:/data
+    ports:
+      - "127.0.0.1:3000:3000"
+volumes:
+  community-data:

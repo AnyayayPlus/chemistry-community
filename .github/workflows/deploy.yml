@@ -1,0 +1,83 @@
+name: Check, publish, and deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.16.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run build
+      - run: node --test tests/*.test.mjs
+
+  publish:
+    needs: check
+    if: ${{ vars.MIGRATION_FREEZE != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REGISTRY: ${{ vars.TCR_REGISTRY || 'hkccr.ccs.tencentyun.com' }}
+      NAMESPACE: ${{ vars.TCR_NAMESPACE }}
+      REPOSITORY: ${{ vars.TCR_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate image coordinates
+        run: |
+          set -euo pipefail
+          test -n "$NAMESPACE" && test -n "$REPOSITORY"
+          [[ "$REGISTRY" =~ ^[a-z0-9.-]+$ ]]
+          [[ "$NAMESPACE" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
+          [[ "$REPOSITORY" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
+          echo "IMAGE=$REGISTRY/$NAMESPACE/$REPOSITORY" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.TCR_USERNAME }}
+          password: ${{ secrets.TCR_PASSWORD }}
+      - name: Build and push image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+      - name: Request Dokploy deployment
+        if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+        env:
+          DOKPLOY_WEBHOOK_URL: ${{ secrets.DOKPLOY_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$DOKPLOY_WEBHOOK_URL"
+          curl --request POST --fail --silent --show-error --connect-timeout 10 --max-time 45 \
+            --output /dev/null "$DOKPLOY_WEBHOOK_URL"
+      - name: Report image
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          echo "Image: ${IMAGE}:sha-${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Digest: ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
