@@ -73,8 +73,14 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$DOKPLOY_WEBHOOK_URL"
-          curl --request POST --fail --silent --show-error --connect-timeout 10 --max-time 45 \
-            --output /dev/null "$DOKPLOY_WEBHOOK_URL"
+          jq -n --arg sha "$GITHUB_SHA" \
+            '{head_commit: {id: $sha, message: "Deploy " + $sha}}' > "$RUNNER_TEMP/deploy-request.json"
+          status=$(curl --request POST --fail --silent --show-error --connect-timeout 10 --max-time 45 \
+            -H 'Content-Type: application/json' -H 'x-github-event: push' \
+            --data-binary @"$RUNNER_TEMP/deploy-request.json" \
+            --output "$RUNNER_TEMP/deploy-response.json" --write-out '%{http_code}' "$DOKPLOY_WEBHOOK_URL")
+          test "$status" = '200'
+          jq -e '.message == "Compose deployed successfully"' "$RUNNER_TEMP/deploy-response.json" > /dev/null
       - name: Report image
         env:
           DIGEST: ${{ steps.image.outputs.digest }}
